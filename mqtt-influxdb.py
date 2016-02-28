@@ -32,7 +32,7 @@ def processArgs():
     parser.add_argument("--mqttpwd", help="MQTT password (default None)", default=None)
     parser.add_argument("--mqttqos", help="MQTT QoS value (default: 0)", type=int, default=0)
     parser.add_argument("--mqttclient", help="MQTT Client ID (default: auto generated, sets clean session to false)", default=None)
-    parser.add_argument("topic", help="MQTT topic to susbcribe to (required)")
+    parser.add_argument("topic", help="MQTT topic to susbcribe to (required)", metavar='N', nargs='+')
     parser.add_argument("--logfile", help="If specified, will log messages to the given file (default log to terminal)", default=None)
     parser.add_argument("-v", help="Increase logging verbosity (can be used up to 5 times)", action="count", default=0)
     return parser.parse_args()
@@ -67,7 +67,11 @@ def _mqttOnConnect(client, userdata, rc):
     global parserArgs
     if rc == 0:
         logging.info("Connected to MQTT broker successfully.")
-        client.subscribe(parserArgs.topic, qos=parserArgs.mqttqos)
+        topic_list = []
+        for topic in parserArgs.topic:
+            topic_list.append((topic, parserArgs.mqttqos))
+
+        client.subscribe(topic_list)
         startInfluxDB()
         return
     elif rc == 1:
@@ -89,26 +93,28 @@ def _mqttOnMessage(client, userdata, message):
     '''This is the event handler for a received message from the MQTT broker.'''
     logging.debug("Received message: " + str(message.payload))
     if dbConn is not None:
-        sendToDB(message.payload)
+        sendToDB(message.topic, message.payload)
     else:
         logging.warning("InfluxDB connection not yet available. Received message dropped.")
 
-def sendToDB(payload):
+def sendToDB(topic, payload):
     '''This function will transmit the given payload to the InfluxDB server'''
     global parserArgs
     writeData = dict()
+    writeData["fields"] = dict()
+
     try:
         # first assume we have an int
-        writeData["points"] = [[int(float(payload))]] 
+        writeData["fields"][topic] = int(float(payload))
     except ValueError:
         # okay, just store it as a string
-        writeData["points"] = [[payload]]
-    writeData["name"] = parserArgs.dbseries
-    writeData["columns"] = [parserArgs.dbcolname]
+        writeData["fields"][topic] = payload
+    writeData["measurement"] = parserArgs.dbseries
 
-    jsonData = json.dumps([writeData])
+    jsonData = json.dumps(writeData)
+
     try:
-        dbConn.write_points(jsonData)
+        dbConn.write_points([writeData])
         logging.debug("Wrote " + jsonData + "to InfluxDB.")
     except Exception as e:
         try:
